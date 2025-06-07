@@ -1,24 +1,31 @@
-<script>
+<script lang="ts">
     // @ts-ignore
     import { SaveFile } from "../wailsjs/go/main/App.js";
     import RibbonBar from "./RibbonBar/RibbonBar.svelte";
-    import DocumentEditor from "./DocumentEditor/DocumentEditor.svelte";
     import ShoSho from "shosho";
     import { EditorView } from "prosemirror-view";
-    import { EditorState } from "prosemirror-state";
+    import {
+        EditorState,
+        NodeSelection,
+        TextSelection,
+        Transaction,
+    } from "prosemirror-state";
     import { schema } from "prosemirror-schema-basic";
     import { undo, redo, history } from "prosemirror-history";
     import { keymap } from "prosemirror-keymap";
     import { baseKeymap, toggleMark } from "prosemirror-commands";
-    import { onMount, tick } from "svelte";
-    import { MarkType, Schema } from "prosemirror-model";
+    import { onMount } from "svelte";
+    import { MarkType, NodeType, Schema } from "prosemirror-model";
 
-    // let editorSchema = schema;
     let newSchema = schema.spec.nodes.append({
         citation: {
             content: "text*",
             inline: true,
             group: "inline",
+            selectable: true,
+            atom: true,
+            isolating: false,
+
             toDOM(node) {
                 return ["span", { class: "citation" }, 0];
             },
@@ -29,40 +36,40 @@
         marks: schema.spec.marks,
     });
 
-    /**@type {EditorState} */
-    let editorState = $state(
-        EditorState.create({
-            schema: editorSchema,
-            plugins: [
-                history(),
-                keymap(baseKeymap),
-                keymap({
-                    "Mod-z": undo,
-                    "Mod-y": redo,
-                    "Mod-b": toggleMark(schema.marks.strong),
-                    "Mod-i": toggleMark(schema.marks.em),
-                }),
-            ],
-        }),
-    );
+    let editorState: EditorState = EditorState.create({
+        schema: editorSchema,
+        plugins: [
+            history(),
+            keymap(baseKeymap),
+            keymap({
+                "Mod-z": undo,
+                "Mod-y": redo,
+                "Mod-b": toggleMark(schema.marks.strong),
+                "Mod-i": toggleMark(schema.marks.em),
+            }),
+        ],
+    });
 
-    /**@type {?EditorView} */
-    let editorView = $state(
+    let editorView: EditorView = $state(
         new EditorView(null, {
             state: editorState,
         }),
     );
 
-    /**
-     * @param {EditorState} state
-     * @param {MarkType} mark
-     */
-    function isMarkActive(state, mark) {
+    let pos = $state(0);
+
+    function isMarkActive(state: EditorState, mark: MarkType): boolean {
         if (state.storedMarks) {
             return mark.isInSet(state.storedMarks) !== undefined;
         } else if (state.selection.empty) {
             return mark.isInSet(state.selection.$anchor.marks()) !== undefined;
         } else {
+            if (
+                state.selection.$from.marksAcross(state.selection.$to) == null
+            ) {
+                return false;
+            }
+
             return (
                 mark.isInSet(
                     state.selection.$from.marksAcross(state.selection.$to),
@@ -71,13 +78,32 @@
         }
     }
 
-    function isNodeType(state, nodeType) {
-        let isheading = state.selection.$anchor.parent.type == nodeType;
+    function containsAttrs(nodeAttrs: any, attrs: any): boolean {
+        for (let key in attrs) {
+            if (attrs.hasOwnProperty(key)) {
+                if (
+                    !nodeAttrs.hasOwnProperty(key) ||
+                    nodeAttrs[key] != attrs[key]
+                ) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    function isNodeType(state: EditorState, nodeType: NodeType, attrs?: any) {
+        let out = state.selection.$anchor.parent.type == nodeType;
+        if (attrs != undefined) {
+            out =
+                out &&
+                containsAttrs(state.selection.$anchor.parent.type, attrs);
+        }
         state.selection.content().content.forEach((node) => {
-            isheading = node.type.name == "heading" || isheading;
+            out = node.type == nodeType || out;
         });
 
-        return isheading;
+        return out;
     }
 
     let activeButtons = $state({
@@ -86,11 +112,7 @@
         header: false,
     });
 
-    /**
-     *
-     * @param {EditorState} state
-     */
-    function updateButtons(state) {
+    function updateButtons(state: EditorState) {
         return {
             bold: isMarkActive(state, state.schema.marks["strong"]),
             italic: isMarkActive(state, state.schema.marks["em"]),
@@ -125,9 +147,103 @@
             {
                 state: editorState,
                 dispatchTransaction(transaction) {
+                    let customSelectionTrigger = false;
+                    // if (transaction.selectionSet) {
+                    //     if (
+                    //         transaction.selection.$to.parent.type.name ==
+                    //         "citation"
+                    //     ) {
+                    //         customSelectionTrigger = true;
+                    //         let anchor = transaction.selection.$anchor;
+
+                    //         let head = editorView.state.doc.resolve(
+                    //             transaction.selection.to +
+                    //                 (transaction.selection.$to.parent.nodeSize -
+                    //                     transaction.selection.$to
+                    //                         .parentOffset) -
+                    //                 1,
+                    //         );
+
+                    //         transaction.setSelection(
+                    //             TextSelection.between(anchor, head),
+                    //         );
+                    //     }
+                    //     if (
+                    //         transaction.selection.$from.parent.type.name ==
+                    //         "citation"
+                    //     ) {
+                    //         customSelectionTrigger = true;
+                    //         let anchor = transaction.selection.$anchor;
+
+                    //         let head = editorView.state.doc.resolve(
+                    //             transaction.selection.from -
+                    //                 transaction.selection.$from.parentOffset -
+                    //                 1,
+                    //         );
+                    //         transaction.setSelection(
+                    //             TextSelection.between(anchor, head),
+                    //         );
+                    //     }
+                    // }
+
                     let newState = editorView.state.apply(transaction);
+
                     editorView.updateState(newState);
+                    if (customSelectionTrigger) {
+                        console.log("now!");
+                    }
                     activeButtons = updateButtons(newState);
+                    pos = editorView.state.selection.anchor;
+                },
+                handleDoubleClickOn: (
+                    view,
+                    pos,
+                    node,
+                    nodePos,
+                    event,
+                    direct,
+                ) => {
+                    if (node.type.name != "citation") {
+                        return false;
+                    }
+                    let tr: Transaction = view.state.tr;
+
+                    tr.setSelection(
+                        NodeSelection.create(view.state.doc, nodePos),
+                    );
+                    tr.deleteSelection();
+                    view.dispatch(tr);
+
+                    return true;
+                },
+                handleTextInput: (view, from, to, text) => {
+                    if (from != to) {
+                        return false;
+                    }
+
+                    let resolved = view.state.doc.resolve(from);
+
+                    if (
+                        resolved.parent.type.name == "citation" &&
+                        resolved.nodeAfter == null
+                    ) {
+                        let tr = view.state.tr;
+                        tr.insertText(text, from + 1);
+                        view.dispatch(tr);
+                        return true;
+                    }
+
+                    if (
+                        resolved.parent.type.name == "citation" &&
+                        resolved.nodeBefore == null
+                    ) {
+                        let tr = view.state.tr;
+                        tr.insertText(text, from - 1);
+                        view.dispatch(tr);
+                        return true;
+                    }
+
+                    return false;
                 },
             },
         );
@@ -136,7 +252,7 @@
 </script>
 
 <main>
-    <RibbonBar bind:editorview={editorView} {activeButtons} />
+    <RibbonBar bind:editorview={editorView} {activeButtons} {pos} />
     <div id="document-area" class="w-dvw fixed top-[111px] overflow-auto">
         <div id="document">
             <div
@@ -155,7 +271,7 @@
     }
 
     #document {
-        @apply w-[8.5in] h-[14in] bg-neutral-800 border-neutral-400 border-1 mx-auto my-10;
+        @apply w-[8.5in] h-[11in] bg-neutral-800 border-neutral-400 border-1 mx-auto my-10;
     }
 
     #document-editor {
@@ -180,6 +296,10 @@
     }
 
     :global(.citation) {
-        @apply bg-yellow-900 border;
+        @apply bg-yellow-900 border inline mx-[1px];
+    }
+
+    :global(.citation:hover) {
+        @apply bg-yellow-700;
     }
 </style>
